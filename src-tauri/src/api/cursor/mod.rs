@@ -49,6 +49,16 @@ pub const CURSOR_API_BASE: &str = "https://api2.cursor.sh";
 /// access/refresh pair comes back.
 pub const CURSOR_REFRESH_PATH: &str = "/auth/exchange_user_api_key";
 
+/// The browser page a sign-in is approved on: Cursor's own CLI deep-link
+/// login. Query: `challenge` (S256 of the verifier), `uuid` (the attempt),
+/// `mode=login`, `redirectTarget=cli`.
+pub const CURSOR_LOGIN_URL: &str = "https://www.cursor.com/loginDeepControl";
+
+/// Where the tokens are collected once the page was approved: `GET
+/// {CURSOR_API_BASE}/auth/poll?uuid=…&verifier=…`. 404 and 202 mean "not
+/// yet"; 2xx with `accessToken` (or `apiKey`) is the sign-in.
+pub const CURSOR_POLL_PATH: &str = "/auth/poll";
+
 /// `x-cursor-client-type`. Cursor gates some behaviour on the client kind;
 /// `cli` is the one whose agent protocol this speaks.
 pub const CURSOR_CLIENT_TYPE: &str = "cli";

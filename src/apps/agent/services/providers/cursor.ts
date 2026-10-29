@@ -47,7 +47,18 @@ export interface CursorAuthStatus {
   hasRefreshToken: boolean;
   /** Whether a Cursor desktop install was found to sign in from. */
   cursorAppDetected: boolean;
+  /**
+   * The install is signed in, but since Cursor's 2026-10 update it keeps the
+   * session in a form Aurora cannot send. "Connect" cannot work; the browser
+   * sign-in can.
+   */
+  cursorAppSessionUnusable: boolean;
   lastRefresh: string | null;
+}
+
+/** The page a browser sign-in is approved on. */
+export interface CursorLoginStart {
+  url: string;
 }
 
 /** Whether a meter shows a share of an allowance or money that gets billed. */
@@ -112,6 +123,25 @@ export function cursorAuthStatus(): Promise<CursorAuthStatus> {
 /** Adopt the Cursor app's session. No browser, no key. */
 export function cursorAuthConnect(): Promise<CursorAuthStatus> {
   return invoke<CursorAuthStatus>("cursor_auth_connect");
+}
+
+/**
+ * Start Cursor's browser sign-in (the same deep-link flow its CLI uses). On
+ * the desktop the page opens by itself; the URL comes back so the card can
+ * offer it when the browser did not come up, or when Aurora runs headless
+ * and the browser is on another machine.
+ */
+export function cursorAuthLoginBegin(): Promise<CursorLoginStart> {
+  return invoke<CursorLoginStart>("cursor_auth_login_begin");
+}
+
+/** Resolves once the sign-in landed (tokens already stored), rejects on cancel or timeout. */
+export function cursorAuthLoginWait(): Promise<CursorAuthStatus> {
+  return invoke<CursorAuthStatus>("cursor_auth_login_wait");
+}
+
+export function cursorAuthLoginCancel(): Promise<void> {
+  return invoke<void>("cursor_auth_login_cancel");
 }
 
 /** Forget Aurora's copy. The Cursor app stays signed in. */

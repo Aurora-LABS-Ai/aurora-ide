@@ -1,13 +1,22 @@
 //! Cursor credential lifecycle.
 //!
-//! Two stores, one direction:
+//! Two stores, one direction, and a sign-in of our own:
 //!
 //! - **Cursor's own `state.vscdb`** (the desktop editor's globalStorage
-//!   SQLite) is the *seed*. It holds `cursorAuth/accessToken`,
+//!   SQLite) is a *seed*. It holds `cursorAuth/accessToken`,
 //!   `cursorAuth/refreshToken`, and display metadata. Aurora opens it
-//!   **read-only** and never writes to it.
+//!   **read-only** and never writes to it. Since Cursor's 2026-10 update the
+//!   editor keeps its session there in a form that is not a bearer token any
+//!   more (631 opaque characters, no JWT segments), so the seed is only used
+//!   when it still parses as a JWT; otherwise the card says so and offers the
+//!   browser sign-in.
+//! - **The browser sign-in** ([`begin_login`] / [`wait_login`]) is Cursor's
+//!   own CLI deep-link flow: a PKCE challenge on `cursor.com/loginDeepControl`,
+//!   approved in any browser, then `api2.cursor.sh/auth/poll` hands back a
+//!   real access/refresh pair. Probed live on 2026-10-29 (a 60-day session
+//!   JWT, a refresh JWT, and the usage endpoint answering with the plan).
 //! - **`<root>/auth/cursor-auth.json`** is Aurora's own store. Everything we
-//!   rotate lands here.
+//!   sign in to or rotate lands here.
 //!
 //! This is the opposite of [`crate::api::codex::auth`], which writes back into
 //! `~/.codex/auth.json` so the Codex CLI keeps working. The asymmetry is
@@ -27,9 +36,13 @@ use std::path::PathBuf;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use sha2::{Digest, Sha256};
+use tokio::sync::{oneshot, Mutex};
+use tokio_util::sync::CancellationToken;
 
-use super::{CURSOR_API_BASE, CURSOR_REFRESH_PATH};
+use super::{
+    CURSOR_API_BASE, CURSOR_LOGIN_URL, CURSOR_POLL_PATH, CURSOR_REFRESH_PATH,
+};
 
 /// Refresh when the access token has less than this long to live. Cursor's
 /// session tokens are ~2 months, so a wide skew costs nothing and keeps a
@@ -42,8 +55,11 @@ const KEY_REFRESH: &str = "cursorAuth/refreshToken";
 const KEY_EMAIL: &str = "cursorAuth/cachedEmail";
 const KEY_MEMBERSHIP: &str = "cursorAuth/stripeMembershipType";
 
-const SIGNED_OUT_MSG: &str = "Not signed in to Cursor. Sign in to the Cursor app, then open \
-                              Settings \u{2192} Providers \u{2192} Cursor and connect.";
+const SIGNED_OUT_MSG: &str = "Not signed in to Cursor. Open Settings \u{2192} Providers \
+                              \u{2192} Cursor and sign in with your browser.";
+
+/// How long a browser sign-in may stay unapproved before it is given up.
+pub const LOGIN_TIMEOUT_SECS: u64 = 300;
 
 // ---------------------------------------------------------------------------
 // Aurora's own store
@@ -158,18 +174,32 @@ pub fn cursor_state_db() -> Option<PathBuf> {
     Some(suffix.iter().fold(base?, |acc, part| acc.join(part)))
 }
 
+/// What the Cursor install told us besides a usable token: whether it is
+/// there at all, whether its session is in a form Aurora cannot use, and the
+/// display metadata that is readable either way.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstallInfo {
+    pub detected: bool,
+    /// The editor is signed in, but its stored session is not a bearer token
+    /// Aurora can send (Cursor's 2026-10 format). The browser sign-in is the
+    /// way in.
+    pub session_unusable: bool,
+    pub email: Option<String>,
+    pub membership: Option<String>,
+}
+
 /// Read the four `cursorAuth/*` keys out of Cursor's SQLite.
 ///
 /// Opened read-only. If that fails — Cursor is running and the WAL sidecar
 /// isn't readable, most likely — the file is copied to a scratch path and
 /// read from there rather than giving up, because "sign in to Cursor" is
 /// unhelpful advice when the user plainly *is* signed in.
-fn read_cursor_install() -> Result<Option<StoredCredentials>, String> {
+fn read_cursor_install_full() -> Result<(Option<StoredCredentials>, InstallInfo), String> {
     let Some(db) = cursor_state_db() else {
-        return Ok(None);
+        return Ok((None, InstallInfo::default()));
     };
     if !db.is_file() {
-        return Ok(None);
+        return Ok((None, InstallInfo::default()));
     }
     let rows = match query_item_table(&db) {
         Ok(rows) => rows,
@@ -186,18 +216,43 @@ fn read_cursor_install() -> Result<Option<StoredCredentials>, String> {
             copied?
         }
     };
+    Ok(install_from_rows(&rows))
+}
 
+/// Interpret the install's rows. A session is usable only when its access
+/// token is a JWT: that is what Cursor's servers take as a bearer, and what
+/// the editor stored until its 2026-10 update. Anything else is reported as
+/// present-but-unusable so the card can send the user to the browser
+/// sign-in instead of "connecting" a token that 401s on every call.
+fn install_from_rows(
+    rows: &std::collections::HashMap<String, String>,
+) -> (Option<StoredCredentials>, InstallInfo) {
+    let email = non_empty(rows.get(KEY_EMAIL));
+    let membership = non_empty(rows.get(KEY_MEMBERSHIP));
     let access = rows.get(KEY_ACCESS).cloned().unwrap_or_default();
+    let mut info = InstallInfo {
+        detected: true,
+        session_unusable: false,
+        email: email.clone(),
+        membership: membership.clone(),
+    };
     if access.trim().is_empty() {
-        return Ok(None);
+        return (None, info);
     }
-    Ok(Some(StoredCredentials {
-        access_token: access,
-        refresh_token: non_empty(rows.get(KEY_REFRESH)),
-        email: non_empty(rows.get(KEY_EMAIL)),
-        membership: non_empty(rows.get(KEY_MEMBERSHIP)),
-        last_refresh: None,
-    }))
+    if jwt_claims(&access).is_none() {
+        info.session_unusable = true;
+        return (None, info);
+    }
+    (
+        Some(StoredCredentials {
+            access_token: access,
+            refresh_token: non_empty(rows.get(KEY_REFRESH)),
+            email,
+            membership,
+            last_refresh: None,
+        }),
+        info,
+    )
 }
 
 fn non_empty(value: Option<&String>) -> Option<String> {
@@ -290,12 +345,24 @@ fn is_fresh(token: &str) -> bool {
 /// expiry rather than file mtime — mtime moves when Cursor rewrites unrelated
 /// keys in the same database.
 pub fn load() -> Result<Option<StoredCredentials>, String> {
+    load_full().map(|(creds, _)| creds)
+}
+
+/// [`load`], plus what the Cursor install reported about itself.
+pub fn load_full() -> Result<(Option<StoredCredentials>, InstallInfo), String> {
     let ours = read_store()?;
     // A missing or unreadable Cursor install is not an error: the user may
     // have signed in through Aurora and since uninstalled the editor.
-    let theirs = read_cursor_install().unwrap_or(None);
+    let (theirs, info) = read_cursor_install_full().unwrap_or_default();
 
-    Ok(match (ours, theirs) {
+    Ok((reconcile(ours, theirs), info))
+}
+
+fn reconcile(
+    ours: Option<StoredCredentials>,
+    theirs: Option<StoredCredentials>,
+) -> Option<StoredCredentials> {
+    match (ours, theirs) {
         (None, None) => None,
         (Some(ours), None) => Some(ours),
         (None, Some(theirs)) => Some(theirs),
@@ -318,7 +385,7 @@ pub fn load() -> Result<Option<StoredCredentials>, String> {
                 })
             }
         }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -340,27 +407,32 @@ pub struct CursorAuthStatus {
     pub has_refresh_token: bool,
     /// Whether a Cursor desktop install was found to seed from.
     pub cursor_app_detected: bool,
+    /// The install is signed in, but its session is in a form Aurora cannot
+    /// send (Cursor's 2026-10 format): "Connect" cannot work, the browser
+    /// sign-in can.
+    pub cursor_app_session_unusable: bool,
     pub last_refresh: Option<String>,
 }
 
 impl CursorAuthStatus {
-    fn signed_out(cursor_app_detected: bool) -> Self {
+    fn signed_out(install: &InstallInfo) -> Self {
         Self {
             signed_in: false,
             email: None,
             membership: None,
             expires_at: None,
             has_refresh_token: false,
-            cursor_app_detected,
+            cursor_app_detected: install.detected,
+            cursor_app_session_unusable: install.session_unusable,
             last_refresh: None,
         }
     }
 }
 
 pub fn status() -> Result<CursorAuthStatus, String> {
-    let detected = cursor_state_db().map(|p| p.is_file()).unwrap_or(false);
-    let Some(creds) = load()? else {
-        return Ok(CursorAuthStatus::signed_out(detected));
+    let (creds, install) = load_full()?;
+    let Some(creds) = creds else {
+        return Ok(CursorAuthStatus::signed_out(&install));
     };
     Ok(CursorAuthStatus {
         signed_in: true,
@@ -371,7 +443,8 @@ pub fn status() -> Result<CursorAuthStatus, String> {
             .refresh_token
             .as_deref()
             .is_some_and(|t| !t.trim().is_empty()),
-        cursor_app_detected: detected,
+        cursor_app_detected: install.detected,
+        cursor_app_session_unusable: install.session_unusable,
         last_refresh: creds.last_refresh.clone(),
     })
 }
@@ -383,10 +456,248 @@ pub fn status() -> Result<CursorAuthStatus, String> {
 /// visible moment of consent rather than silently adopting a token the first
 /// time a turn runs.
 pub fn adopt_from_cursor_app() -> Result<CursorAuthStatus, String> {
-    let creds = read_cursor_install()?
-        .ok_or("No Cursor session found. Sign in to the Cursor app first, then try again.")?;
+    let (creds, install) = read_cursor_install_full()?;
+    let Some(creds) = creds else {
+        return Err(if install.session_unusable {
+            "Your Cursor app is signed in, but since its latest update it keeps its session \
+             in a form Aurora can't use. Sign in with your browser instead."
+                .to_string()
+        } else {
+            "No Cursor session found. Sign in with your browser, or sign in to the Cursor \
+             app first and try again."
+                .to_string()
+        });
+    };
     write_store(&creds)?;
     status()
+}
+
+// ---------------------------------------------------------------------------
+// Browser sign-in (Cursor's CLI deep-link flow)
+// ---------------------------------------------------------------------------
+
+fn b64url(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// One sign-in attempt: the page to approve and the secret that proves, at
+/// poll time, that this process is the one that opened it.
+#[derive(Debug, Clone)]
+pub struct LoginAttempt {
+    pub url: String,
+    pub uuid: String,
+    pub verifier: String,
+}
+
+/// A fresh PKCE pair and attempt id, and the page built from them.
+#[must_use]
+pub fn new_login_attempt() -> LoginAttempt {
+    use rand::RngCore;
+    let mut raw = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut raw);
+    let verifier = b64url(&raw);
+    let challenge = b64url(&Sha256::digest(verifier.as_bytes()));
+    let uuid = uuid::Uuid::new_v4().to_string();
+    // Every value is URL-safe already (base64url and a UUID), so no encoding.
+    let url = format!(
+        "{CURSOR_LOGIN_URL}?challenge={challenge}&uuid={uuid}&mode=login&redirectTarget=cli"
+    );
+    LoginAttempt { url, uuid, verifier }
+}
+
+/// What one poll of `/auth/poll` said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PollOutcome {
+    /// Not approved yet (404 or 202, or a 2xx with no token in it).
+    Pending,
+    /// The sign-in landed.
+    Tokens {
+        access_token: String,
+        refresh_token: Option<String>,
+    },
+    /// Cursor answered with something other than "not yet"; logged and
+    /// retried, because the script this mirrors does the same and a passing
+    /// 5xx must not end a sign-in the user is in the middle of.
+    Odd(String),
+}
+
+fn parse_poll(status: u16, body: &str) -> PollOutcome {
+    match status {
+        202 | 404 => PollOutcome::Pending,
+        200..=299 => {
+            let value: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+            let access = value
+                .get("accessToken")
+                .or_else(|| value.get("apiKey"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|t| !t.is_empty());
+            match access {
+                Some(access) => PollOutcome::Tokens {
+                    access_token: access.to_string(),
+                    refresh_token: value
+                        .get("refreshToken")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_string),
+                },
+                None => PollOutcome::Pending,
+            }
+        }
+        other => PollOutcome::Odd(format!("HTTP {other} {}", truncate(body, 200))),
+    }
+}
+
+struct PendingLogin {
+    cancel: CancellationToken,
+    /// Taken by [`wait_login`]; `None` once someone is waiting.
+    done: Option<oneshot::Receiver<Result<CursorAuthStatus, String>>>,
+}
+
+fn pending_login() -> &'static std::sync::Mutex<Option<PendingLogin>> {
+    static PENDING: std::sync::OnceLock<std::sync::Mutex<Option<PendingLogin>>> =
+        std::sync::OnceLock::new();
+    PENDING.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Start a browser sign-in and return the page to open.
+///
+/// Polling starts at once in the background and keeps going for
+/// [`LOGIN_TIMEOUT_SECS`] whether or not anyone calls [`wait_login`]: a
+/// sign-in approved while the card was closed still lands in the store. Any
+/// earlier attempt is cancelled first.
+pub fn begin_login() -> String {
+    cancel_login();
+    let attempt = new_login_attempt();
+    let cancel = CancellationToken::new();
+    let (done_tx, done_rx) = oneshot::channel();
+    *pending_login().lock().unwrap_or_else(|p| p.into_inner()) = Some(PendingLogin {
+        cancel: cancel.clone(),
+        done: Some(done_rx),
+    });
+    let url = attempt.url.clone();
+    tokio::spawn(async move {
+        let result = poll_until_signed_in(attempt, cancel).await;
+        let _ = done_tx.send(result);
+    });
+    url
+}
+
+/// Hold for the attempt started by [`begin_login`] to finish, one way or
+/// another. A second waiter on the same attempt, or a wait with no attempt,
+/// gets an error rather than hanging.
+pub async fn wait_login() -> Result<CursorAuthStatus, String> {
+    let done = pending_login()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_mut()
+        .and_then(|pending| pending.done.take())
+        .ok_or("No Cursor sign-in is in progress. Start one first.")?;
+    match done.await {
+        Ok(result) => result,
+        Err(_) => Err("Sign-in was cancelled.".to_string()),
+    }
+}
+
+/// Abort a pending browser sign-in. Safe when none is running.
+pub fn cancel_login() {
+    if let Some(pending) = pending_login()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+    {
+        pending.cancel.cancel();
+    }
+}
+
+/// Poll `/auth/poll` until the page was approved, the attempt was cancelled,
+/// or the timeout passed. Backs off from 1 s to 5 s between polls, the way
+/// Cursor's own CLI does. On success the pair is written to Aurora's store
+/// with the display metadata the install can still provide.
+async fn poll_until_signed_in(
+    attempt: LoginAttempt,
+    cancel: CancellationToken,
+) -> Result<CursorAuthStatus, String> {
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|err| format!("build HTTP client: {err}"))?;
+    let poll_url = format!(
+        "{CURSOR_API_BASE}{CURSOR_POLL_PATH}?uuid={}&verifier={}",
+        attempt.uuid, attempt.verifier
+    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS);
+    let mut interval_ms: u64 = 1000;
+    let mut network_errors = 0u32;
+
+    loop {
+        if cancel.is_cancelled() {
+            return Err("Sign-in was cancelled.".to_string());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("Sign-in timed out before it was approved in the browser. Try again."
+                .to_string());
+        }
+        let outcome = match http
+            .get(&poll_url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+        {
+            Ok(response) => {
+                network_errors = 0;
+                let status = response.status().as_u16();
+                let body = response.text().await.unwrap_or_default();
+                parse_poll(status, &body)
+            }
+            Err(err) => {
+                network_errors += 1;
+                if network_errors > 30 {
+                    return Err(format!("Could not reach Cursor to finish the sign-in: {err}"));
+                }
+                PollOutcome::Pending
+            }
+        };
+        match outcome {
+            PollOutcome::Tokens {
+                access_token,
+                refresh_token,
+            } => {
+                let (_, install) = read_cursor_install_full().unwrap_or_default();
+                let creds = StoredCredentials {
+                    access_token,
+                    refresh_token,
+                    // The session JWT carries no email; the install's cached
+                    // one is the same account whenever the editor is signed in.
+                    email: install.email,
+                    membership: install.membership,
+                    last_refresh: None,
+                };
+                write_store(&creds)?;
+                crate::logging::log_info(
+                    "cursor",
+                    "browser sign-in completed; tokens stored in Aurora's own store",
+                );
+                // The attempt is over: a later cancel must not touch a new one.
+                let _ = pending_login()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take();
+                return status();
+            }
+            PollOutcome::Odd(what) => {
+                crate::logging::log_warn("cursor", &format!("auth/poll answered {what}; retrying"));
+            }
+            PollOutcome::Pending => {}
+        }
+        tokio::select! {
+            () = cancel.cancelled() => return Err("Sign-in was cancelled.".to_string()),
+            () = tokio::time::sleep(std::time::Duration::from_millis(interval_ms)) => {}
+        }
+        interval_ms = (interval_ms * 12 / 10).min(5000);
+    }
 }
 
 /// Forget Aurora's copy. Cursor's own install is left completely alone — the
@@ -451,8 +762,8 @@ pub async fn fresh_access(force: bool) -> Result<String, String> {
                 }
             }
             Err(format!(
-                "Cursor token refresh failed: {err}. Sign in to the Cursor app again, then \
-                 reconnect from Settings \u{2192} Providers \u{2192} Cursor."
+                "Cursor token refresh failed: {err}. Sign in again from Settings \u{2192} \
+                 Providers \u{2192} Cursor."
             ))
         }
     }
@@ -577,10 +888,104 @@ mod tests {
 
     #[test]
     fn a_signed_out_status_still_reports_whether_cursor_is_installed() {
-        let status = CursorAuthStatus::signed_out(true);
+        let status = CursorAuthStatus::signed_out(&InstallInfo {
+            detected: true,
+            session_unusable: true,
+            ..Default::default()
+        });
         assert!(!status.signed_in);
         assert!(status.cursor_app_detected);
+        assert!(status.cursor_app_session_unusable);
         assert!(!status.has_refresh_token);
+    }
+
+    fn rows(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// Cursor's 2026-10 editor stores a 631-character opaque value where the
+    /// JWT used to be. Adopting it produced a bearer that 401'd on every
+    /// call ("not logged in", "the access token carries no account id").
+    #[test]
+    fn an_install_session_that_is_not_a_jwt_is_reported_unusable_not_adopted() {
+        let opaque = format!("cursor{}", "x".repeat(625));
+        let (creds, info) = install_from_rows(&rows(&[
+            (KEY_ACCESS, &opaque),
+            (KEY_REFRESH, &opaque),
+            (KEY_EMAIL, "someone@example.com"),
+            (KEY_MEMBERSHIP, "pro_plus"),
+        ]));
+        assert!(creds.is_none(), "an opaque token must not become a bearer");
+        assert_eq!(
+            info,
+            InstallInfo {
+                detected: true,
+                session_unusable: true,
+                email: Some("someone@example.com".into()),
+                membership: Some("pro_plus".into()),
+            }
+        );
+        // The metadata still seeds a browser sign-in's display line.
+        let jwt = jwt_with_exp(1_800_000_000);
+        let (creds, info) = install_from_rows(&rows(&[(KEY_ACCESS, &jwt), (KEY_EMAIL, "a@b.c")]));
+        assert_eq!(creds.unwrap().email.as_deref(), Some("a@b.c"));
+        assert!(!info.session_unusable);
+        let (creds, info) = install_from_rows(&rows(&[(KEY_EMAIL, "a@b.c")]));
+        assert!(creds.is_none());
+        assert!(info.detected && !info.session_unusable, "{info:?}");
+    }
+
+    #[test]
+    fn a_login_attempt_links_its_challenge_to_its_verifier() {
+        let a = new_login_attempt();
+        let b = new_login_attempt();
+        assert_ne!(a.verifier, b.verifier, "each attempt gets its own secret");
+        let expected = b64url(&Sha256::digest(a.verifier.as_bytes()));
+        assert!(a.url.starts_with(CURSOR_LOGIN_URL), "{}", a.url);
+        assert!(a.url.contains(&format!("challenge={expected}")), "{}", a.url);
+        assert!(a.url.contains(&format!("uuid={}", a.uuid)), "{}", a.url);
+        assert!(a.url.ends_with("&mode=login&redirectTarget=cli"), "{}", a.url);
+        assert!(!a.url.contains(&a.verifier), "the verifier never goes on the page");
+        assert_eq!(a.verifier.len(), 43, "32 random bytes, base64url, no padding");
+    }
+
+    #[test]
+    fn poll_replies_are_classified() {
+        assert_eq!(parse_poll(404, ""), PollOutcome::Pending);
+        assert_eq!(parse_poll(202, "{}"), PollOutcome::Pending);
+        assert_eq!(parse_poll(200, "{}"), PollOutcome::Pending);
+        assert_eq!(
+            parse_poll(200, r#"{"accessToken":"at","refreshToken":"rt","authId":"x"}"#),
+            PollOutcome::Tokens {
+                access_token: "at".into(),
+                refresh_token: Some("rt".into())
+            }
+        );
+        // The script this mirrors accepts `apiKey` too (API-key mode, no refresh).
+        assert_eq!(
+            parse_poll(200, r#"{"apiKey":"k"}"#),
+            PollOutcome::Tokens {
+                access_token: "k".into(),
+                refresh_token: None
+            }
+        );
+        assert!(matches!(parse_poll(500, "boom"), PollOutcome::Odd(m) if m.contains("500")));
+    }
+
+    #[tokio::test]
+    async fn waiting_with_no_attempt_or_after_a_cancel_does_not_hang() {
+        cancel_login();
+        let err = wait_login().await.unwrap_err();
+        assert!(err.contains("No Cursor sign-in"), "{err}");
+        // begin → cancel → wait: the waiter is released, not left hanging.
+        let url = begin_login();
+        assert!(url.starts_with(CURSOR_LOGIN_URL));
+        cancel_login();
+        let err = wait_login().await.unwrap_err();
+        assert!(err.contains("No Cursor sign-in") || err.contains("cancelled"), "{err}");
     }
 
     /// Reads the real Cursor install on this machine.

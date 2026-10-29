@@ -2,8 +2,9 @@
  * Agent Window — Cursor (subscription) provider card.
  *
  * Rendered in the Providers detail pane for the Cursor provider. There is no
- * API key and no browser hop: the Rust side reads the Cursor desktop app's own
- * session, so connecting is one button.
+ * API key. Signing in is Cursor's own browser flow (a page you approve, then
+ * Aurora collects the tokens), and when the Cursor desktop app still keeps a
+ * session Aurora can read, connecting to that is one button instead.
  *
  * ## Why the model list looks like this
  *
@@ -30,10 +31,14 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
+import { isTauri } from "@/kernel/lib/ipc/tauri";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   CURSOR_PROVIDER_ID,
   cursorAuthConnect,
+  cursorAuthLoginBegin,
+  cursorAuthLoginCancel,
+  cursorAuthLoginWait,
   cursorAuthSignOut,
   cursorAuthStatus,
   cursorMeterValue,
@@ -61,7 +66,7 @@ import { AgentIcon } from "../shared/AgentIcon";
 import { ProviderAvatar } from "./ProviderAvatar";
 import { AgwButton, AgwSwitch, AgwTextInput } from "./primitives";
 
-type Phase = "loading" | "signed-out" | "ready" | "error";
+type Phase = "loading" | "signed-out" | "signing-in" | "ready" | "error";
 
 /** `pro_plus` → `Pro Plus`. */
 function planLabel(membership: string | null): string | null {
@@ -131,6 +136,10 @@ export const CursorProviderCard: React.FC<{
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [showLegacy, setShowLegacy] = useState(false);
+  // The page the browser sign-in is approved on, kept so the card can hand
+  // it over when the browser did not open (or lives on another machine).
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   const loadModels = useCallback(async (refresh = false) => {
     setBusy(true);
@@ -201,6 +210,48 @@ export const CursorProviderCard: React.FC<{
       setError(String(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const signIn = async () => {
+    setError(null);
+    setLinkCopied(false);
+    setPhase("signing-in");
+    try {
+      const start = await cursorAuthLoginBegin();
+      setLoginUrl(start.url);
+      // On the desktop the Rust side opened the page. In a browser on
+      // `aurora serve` the engine cannot reach this screen, so open it from
+      // here; the copy button below covers a blocked pop-up.
+      if (!isTauri()) {
+        window.open(start.url, "_blank", "noopener,noreferrer");
+      }
+      const next = await cursorAuthLoginWait();
+      setStatus(next);
+      setPhase("ready");
+      await loadModels(true);
+      void loadUsage();
+    } catch (err) {
+      setError(String(err));
+      setPhase("signed-out");
+    } finally {
+      setLoginUrl(null);
+    }
+  };
+
+  const cancelSignIn = () => {
+    void cursorAuthLoginCancel();
+    setLoginUrl(null);
+    setPhase("signed-out");
+  };
+
+  const copyLoginLink = async () => {
+    if (!loginUrl) return;
+    try {
+      await navigator.clipboard.writeText(loginUrl);
+      setLinkCopied(true);
+    } catch {
+      setLinkCopied(false);
     }
   };
 
@@ -324,8 +375,9 @@ export const CursorProviderCard: React.FC<{
           <div className="agw-atlas-sub">
             {phase === "ready" &&
               (status?.email ? `Signed in as ${status.email}` : "Signed in")}
-            {phase === "signed-out" && "Uses your Cursor app's session — no API key"}
-            {phase === "loading" && "Checking your Cursor app…"}
+            {phase === "signed-out" && "Uses your Cursor plan — no API key"}
+            {phase === "signing-in" && "Waiting for the browser…"}
+            {phase === "loading" && "Checking sign-in…"}
             {phase === "error" && "Couldn't read your Cursor session"}
           </div>
         </div>
@@ -363,40 +415,79 @@ export const CursorProviderCard: React.FC<{
         </div>
       )}
 
+      {phase === "signing-in" && (
+        <div className="agw-atlas-body agw-cursor-connect">
+          <p>
+            Approve the sign-in in your browser. This card updates by itself
+            once you're done.
+          </p>
+          {loginUrl && (
+            <p className="agw-cursor-hint">
+              If the browser didn't open, copy the link and open it anywhere,
+              even on another machine.
+            </p>
+          )}
+          <div className="agw-cursor-actions">
+            {loginUrl && (
+              <AgwButton onClick={() => void copyLoginLink()}>
+                {linkCopied ? "Link copied" : "Copy sign-in link"}
+              </AgwButton>
+            )}
+            <AgwButton onClick={cancelSignIn}>Cancel</AgwButton>
+          </div>
+        </div>
+      )}
+
       {(phase === "signed-out" || phase === "error") && (
         <div className="agw-atlas-body agw-cursor-connect">
-          {status?.cursorAppDetected ? (
+          {status?.cursorAppSessionUnusable ? (
+            <>
+              <p>
+                Your Cursor app is signed in, but since its latest update it
+                keeps that session in a form Aurora can't use. Sign in with
+                your browser instead; your Cursor app stays as it is.
+              </p>
+              <AgwButton variant="primary" onClick={() => void signIn()} disabled={busy}>
+                Sign in with browser
+              </AgwButton>
+            </>
+          ) : status?.cursorAppDetected ? (
             <>
               <p>
                 Cursor is installed on this machine. Connecting reads the
                 session it already has — your Cursor app stays signed in and
-                nothing is sent anywhere.
+                nothing is sent anywhere. Or sign in with your browser.
               </p>
-              <AgwButton
-                variant="primary"
-                icon="plug"
-                onClick={() => void connect()}
-                disabled={busy}
-              >
-                {busy ? "Connecting…" : "Connect Cursor"}
-              </AgwButton>
+              <div className="agw-cursor-actions">
+                <AgwButton
+                  variant="primary"
+                  icon="plug"
+                  onClick={() => void connect()}
+                  disabled={busy}
+                >
+                  {busy ? "Connecting…" : "Connect Cursor"}
+                </AgwButton>
+                <AgwButton onClick={() => void signIn()} disabled={busy}>
+                  Sign in with browser
+                </AgwButton>
+              </div>
             </>
           ) : (
             <>
               <p>
-                No Cursor session found. Sign in to the Cursor app, then
-                connect.
+                Sign in with your browser to use your Cursor plan here. No
+                Cursor install and no API key needed.
               </p>
+              <AgwButton variant="primary" onClick={() => void signIn()} disabled={busy}>
+                Sign in with browser
+              </AgwButton>
               {dbPath && (
                 <p className="agw-cursor-hint">
-                  Looked in <code>{dbPath}</code>. If Cursor is installed
-                  somewhere else, point <code>CURSOR_STATE_DB</code> at its{" "}
-                  <code>state.vscdb</code>.
+                  To connect an installed Cursor app instead, Aurora looks in{" "}
+                  <code>{dbPath}</code>; point <code>CURSOR_STATE_DB</code> at
+                  its <code>state.vscdb</code> if it lives elsewhere.
                 </p>
               )}
-              <AgwButton icon="retry" onClick={() => void probe()} disabled={busy}>
-                Check again
-              </AgwButton>
             </>
           )}
         </div>

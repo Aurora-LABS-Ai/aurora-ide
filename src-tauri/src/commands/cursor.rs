@@ -8,7 +8,7 @@ use tauri::AppHandle;
 
 use crate::api::cursor::auth::CursorAuthStatus;
 use crate::api::cursor::commands as core;
-use crate::api::cursor::commands::CursorModelCatalogue;
+use crate::api::cursor::commands::{CursorLoginStart, CursorModelCatalogue};
 use crate::api::cursor::usage::CursorUsageSnapshot;
 use crate::db::{CursorModel, DatabaseAccess};
 
@@ -29,6 +29,33 @@ pub async fn cursor_usage_get() -> Result<CursorUsageSnapshot, String> {
 #[tauri::command]
 pub async fn cursor_auth_connect() -> Result<CursorAuthStatus, String> {
     core::auth_connect().await
+}
+
+/// Start the browser sign-in and open its page. The page is returned too, so
+/// the card can offer the link when the browser did not come up.
+#[tauri::command]
+pub async fn cursor_auth_login_begin(app: AppHandle) -> Result<CursorLoginStart, String> {
+    use tauri_plugin_shell::ShellExt;
+    let start = core::auth_login_begin().await?;
+    // Same note as the Codex sign-in: the shell plugin is what Aurora ships.
+    #[allow(deprecated)]
+    if let Err(err) = app.shell().open(&start.url, None) {
+        crate::logging::log_warn(
+            "cursor",
+            &format!("could not open the sign-in page in the browser: {err}"),
+        );
+    }
+    Ok(start)
+}
+
+#[tauri::command]
+pub async fn cursor_auth_login_wait() -> Result<CursorAuthStatus, String> {
+    core::auth_login_wait().await
+}
+
+#[tauri::command]
+pub async fn cursor_auth_login_cancel() -> Result<(), String> {
+    core::auth_login_cancel().await
 }
 
 #[tauri::command]

@@ -47,6 +47,34 @@ pub async fn auth_connect() -> Result<CursorAuthStatus, String> {
         .map_err(|err| format!("Connect task failed: {err}"))?
 }
 
+/// The page to approve a browser sign-in on. Starts polling for the result
+/// at once; the window opens the page (the desktop wrapper does it itself)
+/// and then calls [`auth_login_wait`].
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorLoginStart {
+    pub url: String,
+}
+
+/// Begin Cursor's deep-link browser sign-in.
+pub async fn auth_login_begin() -> Result<CursorLoginStart, String> {
+    Ok(CursorLoginStart {
+        url: auth::begin_login(),
+    })
+}
+
+/// Hold until the sign-in started by [`auth_login_begin`] lands, is
+/// cancelled, or times out; the tokens are already stored when this returns.
+pub async fn auth_login_wait() -> Result<CursorAuthStatus, String> {
+    auth::wait_login().await
+}
+
+/// Abort a pending browser sign-in.
+pub async fn auth_login_cancel() -> Result<(), String> {
+    auth::cancel_login();
+    Ok(())
+}
+
 /// Forget Aurora's copy of the session.
 ///
 /// The Cursor app is untouched and stays signed in. Note this means a

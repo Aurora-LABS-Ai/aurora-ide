@@ -341,8 +341,9 @@ Touch emulation could not be switched off ({err}), so the page may              
                  panel's own size: if the panel is narrower than {w}px or shorter than {h}px, the \
                  rest of the emulated viewport is simply below the fold — scroll to reach it, the \
                  same as on a real device. `browser_status` reports what the page actually \
-                 got.\n\nThis override survives navigation within the \
-                 page and later turns. Clear it with `reset: true` before judging a desktop \
+                 got.\n\nThis override survives your `browser_navigate` calls \
+                 (a reload included) and later turns; it is dropped only if the user types a new \
+                 address in the panel. Clear it with `reset: true` before judging a desktop \
                  layout, or everything you look at from here is {w}px wide.",
                 w = width as i64,
                 h = height as i64,

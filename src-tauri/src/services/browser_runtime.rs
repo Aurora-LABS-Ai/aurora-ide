@@ -165,6 +165,21 @@ fn sanitize_selector(raw: &str) -> String {
     raw.split('<').next().unwrap_or("").trim().to_string()
 }
 
+/// The agent viewport a navigate should put back, or `None` to clear it.
+///
+/// Only the agent's own `browser_navigate` keeps it, and only on the agent's
+/// page. The user typing an address in the panel still clears it, so the panel
+/// is never left stuck at phone width with nothing saying why.
+fn viewport_to_keep(
+    keep_viewport: bool,
+    label: &str,
+    current: Option<crate::tools::browser::state::Emulation>,
+) -> Option<crate::tools::browser::state::Emulation> {
+    (keep_viewport && label == crate::tools::browser::AGENT_BROWSER_LABEL)
+        .then_some(current)
+        .flatten()
+}
+
 impl BrowserManager {
     pub fn new(app: AppHandle) -> Self {
         Self {
@@ -481,7 +496,27 @@ impl BrowserManager {
         );
     }
 
+    /// Load `url`, dropping any viewport / media emulation the agent set (see
+    /// [`Self::clear_emulation_overrides`]). The path for the USER typing an
+    /// address and for every page other than the agent's own.
     pub fn navigate(&self, label: &str, url: &str) -> Result<(), String> {
+        self.navigate_inner(label, url, false)
+    }
+
+    /// Load `url` in the agent's page and keep the agent's viewport override.
+    ///
+    /// `browser_set_viewport` tells the model its size survives navigation, so
+    /// the agent's own `browser_navigate` (a reload included) must honour that.
+    /// It did not: every navigate cleared the override, and a phone check
+    /// followed by `reload: true` came back at desktop width while the model
+    /// still believed it was looking at 390px (reported by an agent on
+    /// 2026-10-29). Media emulation is still dropped; its tool says it lasts
+    /// until a navigate.
+    pub fn navigate_keeping_viewport(&self, label: &str, url: &str) -> Result<(), String> {
+        self.navigate_inner(label, url, true)
+    }
+
+    fn navigate_inner(&self, label: &str, url: &str, keep_viewport: bool) -> Result<(), String> {
         let window = self.window(label)?;
         // Same rewrite as `open`: a file:// page is deaf to the bridge, so it
         // is served through aurora-page instead. See `services::local_page`.
@@ -512,6 +547,16 @@ impl BrowserManager {
         // A device the USER chose in the panel is kept across navigation, the
         // way DevTools' device mode is: it is re-applied, not cleared.
         if crate::services::browser_view::reapply_after_navigate(&window, label) {
+            self.touch_active(label);
+            return Ok(());
+        }
+        if let Some(emulation) =
+            viewport_to_keep(keep_viewport, label, crate::tools::browser::state::emulation())
+        {
+            // The record and the device frame already describe this size, so
+            // they stay; only the browser side is put back, in one task so the
+            // media clear cannot land after the metrics are re-applied.
+            Self::reapply_agent_viewport(&window, emulation);
             self.touch_active(label);
             return Ok(());
         }
@@ -563,6 +608,46 @@ impl BrowserManager {
                     crate::services::browser_devtools::call_devtools(&handle, method, params).await
                 {
                     eprintln!("[browser] could not clear {method} on navigate: {err}");
+                }
+            }
+        });
+    }
+
+    /// Put the agent's viewport back on the browser after a navigate: clear
+    /// media emulation, then the same two calls `browser_set_viewport` makes.
+    /// Fire-and-forget for the same reason as [`Self::clear_emulation_overrides`].
+    fn reapply_agent_viewport(webview: &Webview, e: crate::tools::browser::state::Emulation) {
+        if !crate::services::browser_devtools::devtools_available() {
+            return;
+        }
+        let handle = webview.clone();
+        tauri::async_runtime::spawn(async move {
+            for (method, params) in [
+                (
+                    "Emulation.setEmulatedMedia",
+                    serde_json::json!({ "media": "", "features": [] }),
+                ),
+                (
+                    "Emulation.setDeviceMetricsOverride",
+                    serde_json::json!({
+                        "width": e.width as i64,
+                        "height": e.height as i64,
+                        "deviceScaleFactor": e.scale,
+                        "mobile": e.mobile,
+                    }),
+                ),
+                (
+                    "Emulation.setTouchEmulationEnabled",
+                    serde_json::json!({
+                        "enabled": e.mobile,
+                        "maxTouchPoints": if e.mobile { 5 } else { 0 },
+                    }),
+                ),
+            ] {
+                if let Err(err) =
+                    crate::services::browser_devtools::call_devtools(&handle, method, params).await
+                {
+                    eprintln!("[browser] could not re-apply {method} after navigate: {err}");
                 }
             }
         });
@@ -2832,6 +2917,39 @@ mod screenshot_encoding_tests {
         let (bytes, w, h) = encode_screenshot(junk.clone());
         assert_eq!(bytes, junk);
         assert_eq!((w, h), (0, 0));
+    }
+}
+
+#[cfg(test)]
+mod viewport_to_keep_tests {
+    use super::viewport_to_keep;
+    use crate::tools::browser::{state::Emulation, AGENT_BROWSER_LABEL};
+
+    const PHONE: Emulation = Emulation {
+        width: 390.0,
+        height: 844.0,
+        scale: 2.0,
+        mobile: true,
+    };
+
+    /// The reported bug: a phone size, then the agent's own reload, came back
+    /// at desktop width.
+    #[test]
+    fn the_agents_navigate_keeps_its_phone_size() {
+        let kept = viewport_to_keep(true, AGENT_BROWSER_LABEL, Some(PHONE)).expect("kept");
+        assert_eq!((kept.width, kept.height, kept.mobile), (390.0, 844.0, true));
+    }
+
+    /// The user typing a new address still clears it.
+    #[test]
+    fn the_users_navigate_clears_it() {
+        assert!(viewport_to_keep(false, AGENT_BROWSER_LABEL, Some(PHONE)).is_none());
+    }
+
+    #[test]
+    fn another_page_never_borrows_the_agents_size() {
+        assert!(viewport_to_keep(true, "browser-search", Some(PHONE)).is_none());
+        assert!(viewport_to_keep(true, AGENT_BROWSER_LABEL, None).is_none());
     }
 }
 

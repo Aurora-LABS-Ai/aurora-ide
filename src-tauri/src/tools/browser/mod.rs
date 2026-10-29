@@ -1409,8 +1409,11 @@ treated as a failure."
         // new document from the old one still answering — the only way a
         // same-URL reload is distinguishable from "nothing happened yet".
         let previous_document = document_origin(&self.manager).await;
+        // Keeps a `browser_set_viewport` size: that tool promises it survives
+        // navigation, and a reload is exactly how a responsive check re-reads
+        // the page.
         self.manager
-            .navigate(AGENT_BROWSER_LABEL, url)
+            .navigate_keeping_viewport(AGENT_BROWSER_LABEL, url)
             .map_err(ToolError::Execution)?;
 
         if let reachability::Reach::Unreachable { reason } = &reach {

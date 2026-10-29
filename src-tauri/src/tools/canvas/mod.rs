@@ -29,15 +29,26 @@ const REPORT_GUIDE: &str = include_str!("../../../../src/canvas-sdk/reporting/GU
 const REPORT_EXAMPLE: &str =
     include_str!("../../../../src/canvas-sdk/reporting/examples/royalties.json");
 
+/// The report guide WITH the example its last sentence promises. The guide
+/// file ends on "The following complete example reproduces…" and the example
+/// is a separate JSON file, so every topic that carries the guide must carry
+/// the example too. On 2026-10-29 an agent reported `topic: "canvas"` ending
+/// on that sentence with nothing after it; only `reports` appended it.
+fn report_guide_with_example() -> String {
+    format!("{REPORT_GUIDE}\n\n```aurora-report\n{REPORT_EXAMPLE}\n```")
+}
+
+fn canvas_guide() -> String {
+    format!("{}\n\n{}", guide::CANVAS_GUIDE, report_guide_with_example())
+}
+
 fn guide_for(input: &Value) -> Result<String, ToolError> {
     match input.get("topic") {
-        None | Some(Value::Null) => Ok(format!("{}\n\n{}", guide::CANVAS_GUIDE, REPORT_GUIDE)),
+        None | Some(Value::Null) => Ok(canvas_guide()),
         Some(Value::String(topic)) => match topic.as_str() {
-            "canvas" => Ok(format!("{}\n\n{}", guide::CANVAS_GUIDE, REPORT_GUIDE)),
+            "canvas" => Ok(canvas_guide()),
             "reply-layout" => Ok(REPLY_LAYOUT_GUIDE.to_string()),
-            "reports" => Ok(format!(
-                "{REPORT_GUIDE}\n\n```aurora-report\n{REPORT_EXAMPLE}\n```"
-            )),
+            "reports" => Ok(report_guide_with_example()),
             _ => Err(ToolError::InvalidInput(
                 "topic must be canvas, reply-layout or reports".into(),
             )),
@@ -91,6 +102,22 @@ pub fn register(reg: &mut ToolRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guide's last sentence promises a complete example; a topic that
+    /// ends on that sentence has cut it (reported by an agent, 2026-10-29).
+    #[test]
+    fn every_topic_carrying_the_report_guide_carries_its_example() {
+        let promise = "reproduces the supplied royalty totals";
+        for input in [json!({}), json!({"topic":"canvas"}), json!({"topic":"reports"})] {
+            let text = guide_for(&input).unwrap();
+            let at = text.find(promise).unwrap_or_else(|| panic!("{input}: no promise"));
+            assert!(
+                text[at..].contains("```aurora-report") && text[at..].contains("Soundrop"),
+                "{input}: the example promised at the end of the guide is missing"
+            );
+            assert!(text.trim_end().ends_with("```"), "{input}: must end on the example");
+        }
+    }
 
     #[test]
     fn guides_are_selected_and_invalid_topics_are_explicit() {
